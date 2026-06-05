@@ -1,0 +1,13 @@
+# Local Streamlit credentials — never commit active keys
+.streamlit/secrets.toml
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.Python
+.env
+.venv/
+venv/
+
+# Runtime caches
+.cache/

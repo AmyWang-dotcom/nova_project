@@ -1,0 +1,9 @@
+streamlit>=1.51.0
+plotly>=5.18.0
+pandas>=2.1.0
+numpy>=1.26.0
+pypdf>=4.0.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+yfinance>=0.2.40
+requests>=2.31.0
