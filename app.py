@@ -714,15 +714,97 @@ def render_institutional_data_ingestion_sidebar(
         indicators = (entry or {}).get("macro_indicators", {})
         spreads = compute_imf_ppp_spreads(selected_pair, indicators)
         st.sidebar.info("### IMF Macro Anchor Insights")
-        st.sidebar.json(
-            {
-                "pair": selected_pair,
-                "china_macro_anchor": CHINA_MACRO_ANCHOR,
-                "macro_indicators": indicators,
-                "ppp_spreads": spreads,
-                "formatted_block": format_imf_macro_indicators_block(indicators),
-            }
+        cpi = indicators.get("inflation_cpi_yoy", {}) if isinstance(indicators, dict) else {}
+        gdp = indicators.get("gdp_growth_forecast", {}) if isinstance(indicators, dict) else {}
+        cofer = (
+            indicators.get("cofer_sovereign_reserves_share", {}) if isinstance(indicators, dict) else {}
         )
+
+        dest = PAIR_TO_COUNTRY.get(selected_pair, "US")
+        base_ccy = (selected_pair.split("/", 1)[0] if "/" in selected_pair else "USD").strip().upper()
+        reserve_ccy = "USD" if base_ccy == "HKD" else base_ccy
+
+        def _pct(val: Any) -> str:
+            try:
+                return f"{float(val):.2f}%"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        def _pp(val: Any) -> str:
+            try:
+                return f"{float(val):+.2f}pp"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        us_cpi = cpi.get(dest)
+        cn_cpi = cpi.get(CHINA_MACRO_ANCHOR, cpi.get("China"))
+        cpi_spread = spreads.get("cpi_spread_vs_china")
+
+        dest_gdp = gdp.get(dest)
+        cn_gdp = gdp.get(CHINA_MACRO_ANCHOR, gdp.get("China"))
+        try:
+            gdp_diff = (
+                float(dest_gdp) - float(cn_gdp)
+                if dest_gdp is not None and cn_gdp is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            gdp_diff = None
+
+        reserve_share = cofer.get(reserve_ccy)
+
+        with st.sidebar.container():
+            st.sidebar.markdown(f"- **{dest} CPI**: {_pct(us_cpi)}")
+            st.sidebar.markdown(f"- **{CHINA_MACRO_ANCHOR} CPI**: {_pct(cn_cpi)}")
+            st.sidebar.metric("CPI Spread (PPP)", _pp(cpi_spread))
+
+            st.sidebar.markdown("")
+            st.sidebar.markdown(f"- **{dest} GDP Forecast**: {_pct(dest_gdp)}")
+            st.sidebar.markdown(f"- **{CHINA_MACRO_ANCHOR} GDP Forecast**: {_pct(cn_gdp)}")
+            st.sidebar.metric(
+                "GDP Growth Differential",
+                _pp(gdp_diff) if gdp_diff is not None else "N/A",
+            )
+
+            st.sidebar.markdown("")
+            st.sidebar.metric(
+                f"{reserve_ccy} Reserve Share (COFER)",
+                _pct(reserve_share),
+            )
+
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("**Executive Interpretation:**")
+
+            inflation_line = (
+                f"Higher {dest} inflation than {CHINA_MACRO_ANCHOR} implies mild long-term "
+                f"{reserve_ccy} purchasing-power erosion under PPP."
+                if isinstance(cpi_spread, (int, float)) and float(cpi_spread) > 0
+                else (
+                    f"{dest} inflation is not materially above {CHINA_MACRO_ANCHOR}; PPP pressure is muted."
+                )
+            )
+            growth_line = (
+                f"{CHINA_MACRO_ANCHOR} growth is structurally stronger, favoring a gradual long-cycle "
+                f"re-anchoring toward CNH on 90–180 day horizons."
+                if gdp_diff is not None and gdp_diff < 0
+                else f"Growth differentials are balanced; macro carry pressure is moderate."
+            )
+            reserve_line = (
+                f"{reserve_ccy} retains structural support from reserve-currency dominance (COFER)."
+                if reserve_share is not None
+                else "Reserve-currency support is stable; maintain disciplined hedge governance."
+            )
+
+            if selected_pair == "USD/CNH":
+                stance = "Maintain **moderate hedge coverage (55–70%)** for 90–180 day receivables via layered window forwards."
+            elif selected_pair in ("EUR/CNH", "GBP/CNH"):
+                stance = "Maintain **moderate hedge coverage (50–65%)** for 90–180 day receivables; ladder forwards to avoid timing risk."
+            else:
+                stance = "Maintain **baseline hedge coverage (40–55%)** and rebalance monthly as the policy corridor evolves."
+
+            st.sidebar.markdown(
+                f"{inflation_line} {reserve_line} {growth_line}\n\n**Recommended long-term hedge stance:** {stance}"
+            )
     elif panel == "cfets":
         china_money = fetch_china_money_central_parity()
         st.sidebar.info("### CFETS Central Parity Limits")
