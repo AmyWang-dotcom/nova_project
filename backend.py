@@ -1178,6 +1178,610 @@ def compute_imf_ppp_spreads(
     }
 
 
+NOVA_RISK_WEIGHTS: dict[str, float] = {
+    "market": 0.35,
+    "macro": 0.25,
+    "policy": 0.25,
+    "knowledge": 0.15,
+}
+
+_PAIR_RESERVE_CCY: dict[str, str] = {
+    "USD/CNH": "USD",
+    "EUR/CNH": "EUR",
+    "GBP/CNH": "GBP",
+    "HKD/CNH": "USD",
+}
+
+_KNOWLEDGE_RISK_DOMAIN_RULES: tuple[tuple[str, int, tuple[str, ...]], ...] = (
+    (
+        "Exposure Risk",
+        20,
+        (
+            "exposure management",
+            "fx exposure",
+            "receivable exposure",
+            "receivable",
+            "net payout",
+            "gross sales",
+            "payout funnel",
+            "export enterprise",
+            "low-margin export",
+            "cash flow hedging",
+            "margin hedging",
+            "amazon us",
+            "amazon uk",
+            "amazon eu",
+            "usd payout",
+            "gbp cash flow",
+            "eur cash flow",
+        ),
+    ),
+    (
+        "Liquidity Risk",
+        15,
+        (
+            "liquidity",
+            "roll-over",
+            "rollover",
+            "roll over",
+            "early delivery",
+            "margin constraint",
+            "margin call",
+            "credit enhancement",
+            "government-backed liquidity",
+            "cash flow timing",
+            "working capital",
+            "petty cash",
+            "zero-margin forward",
+        ),
+    ),
+    (
+        "Compliance Risk",
+        20,
+        (
+            "safe compliance",
+            "safe regulation",
+            "safe reforms",
+            "state administration of foreign exchange",
+            "regulatory risk",
+            "three-way matching",
+            "aml",
+            "anti-money",
+            "payment gateway freeze",
+            "gateway freeze",
+            "discretionary settlement",
+            "audit",
+            "compliance framework",
+            "capital item",
+            "trade background",
+        ),
+    ),
+    (
+        "Macro Event Risk",
+        15,
+        (
+            "fomc",
+            "nfp",
+            "non-farm",
+            "cpi release",
+            "central bank policy",
+            "central bank",
+            "fed guidance",
+            "fed dot plot",
+            "macroeconomics",
+            "sovereign intervention",
+            "liquidity contraction",
+            "imf",
+            "ppp",
+            "purchasing power parity",
+            "macro anchor",
+            "yield curve",
+        ),
+    ),
+    (
+        "Geopolitical / Supply Chain Risk",
+        15,
+        (
+            "freight shock",
+            "freight",
+            "logistics delay",
+            "logistics",
+            "supply chain",
+            "trade war",
+            "geopolitical",
+            "apparel",
+            "fast fashion",
+            "furniture",
+            "vertical industry",
+            "factory payroll",
+            "shipping delay",
+            "co-integration",
+        ),
+    ),
+    (
+        "Treasury Operational Risk",
+        15,
+        (
+            "settlement mismatch",
+            "over-hedge",
+            "over-hedging",
+            "over hedging",
+            "cash flow timing mismatch",
+            "delivery risk",
+            "forward contract mismatch",
+            "hedge accounting",
+            "timing mismatch",
+            "physical delivery",
+            "margin call",
+            "treasury operational",
+            "flexible treasury",
+            "multicurrency cash",
+        ),
+    ),
+)
+
+_KNOWLEDGE_MITIGATION_RULES: tuple[tuple[str, int, tuple[str, ...]], ...] = (
+    ("Natural Hedging", 10, ("natural hedge", "natural hedging", "natural offset")),
+    (
+        "Forward Contract",
+        12,
+        ("forward contract", "forward/swap", "3-month forward", "rolling forward", "forward sleeve"),
+    ),
+    ("Window Forward", 12, ("window forward", "delivery window", "择期远期", "flexible delivery")),
+    (
+        "Currency Option",
+        8,
+        ("currency option", "vanilla option", "fx option", "put option", "one-yuan"),
+    ),
+    ("Zero-Cost Collar", 10, ("zero-cost collar", "collar structure", "range forward")),
+    (
+        "Government Guarantee",
+        15,
+        ("government guarantee", "government-backed", "credit enhancement", "safe harbor", "whitelist"),
+    ),
+    (
+        "Multi-Currency Netting",
+        8,
+        ("multi-currency netting", "multi currency netting", "netting", "world account"),
+    ),
+)
+
+
+def _doc_knowledge_signal_text(doc: dict[str, Any]) -> str:
+    """Compact retrieval signal used for knowledge risk-domain classification."""
+    return " ".join(
+        [
+            str(doc.get("domain", "") or ""),
+            str(doc.get("title", "") or ""),
+            str(doc.get("tags", "") or ""),
+            str(doc.get("actionable_playbook", "") or ""),
+        ]
+    ).lower()
+
+
+def _format_knowledge_risk_explanation(knowledge: dict[str, Any], score: float) -> str:
+    """Human-readable knowledge risk domain breakdown."""
+    domains = knowledge.get("detected_risk_domains", [])
+    mitigations = knowledge.get("detected_mitigation_frameworks", [])
+    contributions = knowledge.get("risk_contributions", [])
+
+    lines = [
+        f"**Knowledge Risk Score:** {score:.0f}",
+        "",
+    ]
+
+    lines.append("**Detected Risk Domains:**")
+    if domains:
+        lines.extend(f"- {name}" for name in domains)
+    else:
+        lines.append("- None detected from current retrieval set")
+
+    lines.append("")
+    lines.append("**Detected Mitigation Frameworks:**")
+    if mitigations:
+        lines.extend(f"- {name}" for name in mitigations)
+    else:
+        lines.append("- None detected from current retrieval set")
+
+    lines.append("")
+    lines.append("**Risk Contributions:**")
+    if contributions:
+        for item in contributions:
+            pts = int(item.get("points", 0))
+            sign = "+" if pts >= 0 else ""
+            lines.append(f"{sign}{pts} {item.get('label', 'Unknown')}")
+    else:
+        lines.append("+0 No active domain exposure")
+
+    lines.extend(
+        [
+            "",
+            f"**Final Knowledge Score:** {score:.0f}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _risk_rating_from_score(score: float) -> str:
+    if score <= 33:
+        return "LOW"
+    if score <= 66:
+        return "MEDIUM"
+    return "HIGH"
+
+
+def _hedge_ratio_from_final_score(score: float) -> float:
+    if score >= 67:
+        return 0.80
+    if score >= 34:
+        return 0.55
+    return 0.30
+
+
+def _normalize_component_score(raw_points: float, max_points: float) -> float:
+    if max_points <= 0:
+        return 0.0
+    return round(min(100.0, max(0.0, (raw_points / max_points) * 100.0)), 1)
+
+
+def compute_market_risk_score(
+    metrics: dict[str, Any],
+    market_factor_score: float,
+) -> dict[str, Any]:
+    """Scale the legacy 0–1 technical factor score to a 0–100 market risk score."""
+    market_score = round(min(100.0, max(0.0, float(market_factor_score) * 100.0)), 1)
+    spot = float(metrics.get("spot", 0.0))
+    ma5 = float(metrics.get("ma5", spot))
+    ma30 = float(metrics.get("ma30", spot))
+    boll_upper = float(metrics.get("bollinger_upper", spot))
+    rsi = float(metrics.get("net_payout_rsi", 50.0))
+    macd_hist = float(metrics.get("net_payout_macd_histogram", 0.0))
+
+    return {
+        "market_score": market_score,
+        "components": {
+            "factor_trend_ma5": int(metrics.get("factor_trend", 0)),
+            "factor_bollinger": int(metrics.get("factor_bollinger", 0)),
+            "factor_ma30": int(metrics.get("factor_macro", 0)),
+            "spot_vs_ma5": "above" if spot >= ma5 else "below",
+            "spot_vs_ma30": "above" if spot >= ma30 else "below",
+            "spot_vs_bollinger_upper": "above" if spot >= boll_upper else "below",
+            "rsi": round(rsi, 2),
+            "macd_histogram": round(macd_hist, 6),
+            "legacy_factor_score_0_1": round(float(market_factor_score), 3),
+        },
+    }
+
+
+def compute_macro_risk_score(
+    pair: str,
+    imf_indicators: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """IMF CPI / GDP / COFER structural risk score on a 0–100 scale."""
+    entry = get_imf_macro_knowledge_entry()
+    indicators = imf_indicators or (entry or {}).get("macro_indicators", {})
+    if not isinstance(indicators, dict):
+        return {
+            "macro_score": 0.0,
+            "components": {},
+            "macro_risk_level": "LOW",
+        }
+
+    cpi = indicators.get("inflation_cpi_yoy", {})
+    gdp = indicators.get("gdp_growth_forecast", {})
+    cofer = indicators.get("cofer_sovereign_reserves_share", {})
+    spreads = compute_imf_ppp_spreads(pair, indicators)
+
+    dest_label = spreads.get("destination_label", "US")
+    china_cpi = float(spreads.get("china_cpi", 0.0))
+    dest_cpi = float(spreads.get("destination_cpi", china_cpi))
+    inflation_spread = float(spreads.get("cpi_spread_vs_china", dest_cpi - china_cpi))
+
+    china_gdp = float(gdp.get(CHINA_MACRO_ANCHOR, gdp.get("China", 0.0)))
+    dest_gdp = float(gdp.get(dest_label, 0.0))
+    gdp_spread = china_gdp - dest_gdp
+
+    reserve_ccy = _PAIR_RESERVE_CCY.get(pair, "USD")
+    reserve_share = float(cofer.get(reserve_ccy, 0.0))
+
+    if inflation_spread > 2.0:
+        inflation_points = 25
+    elif inflation_spread > 1.0:
+        inflation_points = 15
+    elif inflation_spread > 0.0:
+        inflation_points = 5
+    else:
+        inflation_points = 0
+
+    if gdp_spread > 3.0:
+        gdp_points = 25
+    elif gdp_spread > 1.0:
+        gdp_points = 15
+    else:
+        gdp_points = 5
+
+    if reserve_share > 50.0:
+        cofer_points = 25
+    elif reserve_share > 40.0:
+        cofer_points = 15
+    else:
+        cofer_points = 5
+
+    raw_points = inflation_points + gdp_points + cofer_points
+    macro_score = _normalize_component_score(raw_points, 75.0)
+
+    return {
+        "macro_score": macro_score,
+        "macro_risk_level": _risk_rating_from_score(macro_score),
+        "components": {
+            "destination_label": dest_label,
+            "destination_cpi": round(dest_cpi, 3),
+            "china_cpi": round(china_cpi, 3),
+            "inflation_spread_pp": round(inflation_spread, 2),
+            "inflation_points": inflation_points,
+            "destination_gdp": round(dest_gdp, 3),
+            "china_gdp": round(china_gdp, 3),
+            "gdp_spread_pp": round(gdp_spread, 2),
+            "gdp_points": gdp_points,
+            "reserve_currency": reserve_ccy,
+            "reserve_share_pct": round(reserve_share, 2),
+            "cofer_points": cofer_points,
+            "raw_points": raw_points,
+        },
+    }
+
+
+def _fedwatch_policy_points(tnx_proxy: dict[str, Any] | None) -> tuple[int, str]:
+    if not tnx_proxy or tnx_proxy.get("status") != "ok":
+        return 15, "neutral"
+
+    if tnx_proxy.get("dovish_signal"):
+        return 5, "dovish"
+
+    ma5 = float(tnx_proxy.get("ma5_yield", 0.0))
+    ma30 = float(tnx_proxy.get("ma30_yield", 0.0))
+    current = float(tnx_proxy.get("current_yield", 0.0))
+    bb_mid = float(tnx_proxy.get("bollinger_middle", current))
+    if ma5 > ma30 and current > bb_mid:
+        return 25, "hawkish"
+    return 15, "neutral"
+
+
+def compute_policy_risk_score(
+    spot: float,
+    china_money: dict[str, Any] | None = None,
+    tnx_proxy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """FedWatch proxy + CFETS parity deviation policy risk on a 0–100 scale."""
+    china_money = china_money if china_money is not None else fetch_china_money_central_parity()
+    tnx_proxy = tnx_proxy if tnx_proxy is not None else fetch_tnx_fedwatch_proxy()
+
+    fedwatch_points, fedwatch_state = _fedwatch_policy_points(tnx_proxy)
+
+    parity = None
+    deviation_bps = 0.0
+    if china_money.get("status") == "ok" and china_money.get("usd_cny") is not None:
+        parity = float(china_money["usd_cny"])
+        if parity:
+            deviation_bps = abs(float(spot) - parity) / parity * 10_000.0
+
+    if deviation_bps > 300:
+        cfets_points = 25
+    elif deviation_bps > 150:
+        cfets_points = 15
+    else:
+        cfets_points = 5
+
+    raw_points = fedwatch_points + cfets_points
+    policy_score = _normalize_component_score(raw_points, 50.0)
+
+    return {
+        "policy_score": policy_score,
+        "policy_risk_level": _risk_rating_from_score(policy_score),
+        "components": {
+            "fedwatch_state": fedwatch_state,
+            "fedwatch_points": fedwatch_points,
+            "fedwatch_signal_label": tnx_proxy.get("signal_label", "N/A"),
+            "cfets_parity": round(parity, 4) if parity is not None else None,
+            "cfets_deviation_bps": round(deviation_bps, 1),
+            "cfets_points": cfets_points,
+            "raw_points": raw_points,
+        },
+    }
+
+
+def compute_knowledge_risk_score(
+    retrieved_documents: list[dict[str, Any]] | None = None,
+    *,
+    query: str = "",
+) -> dict[str, Any]:
+    """
+    Knowledge-base risk score based on treasury risk-domain exposure and
+    mitigation framework coverage — not keyword frequency or loss detection.
+    """
+    docs = retrieved_documents or []
+    corpus_parts = [query.lower()]
+    for doc in docs:
+        corpus_parts.append(_doc_knowledge_signal_text(doc))
+    corpus = " ".join(corpus_parts)
+
+    detected_domains: dict[str, int] = {}
+    for domain_name, points, patterns in _KNOWLEDGE_RISK_DOMAIN_RULES:
+        if any(pattern in corpus for pattern in patterns):
+            detected_domains[domain_name] = points
+
+    detected_mitigations: dict[str, int] = {}
+    for framework_name, deduction, patterns in _KNOWLEDGE_MITIGATION_RULES:
+        if any(pattern in corpus for pattern in patterns):
+            detected_mitigations[framework_name] = deduction
+
+    domain_points = sum(detected_domains.values())
+    mitigation_points = sum(detected_mitigations.values())
+    raw_points = domain_points - mitigation_points
+    knowledge_score = round(min(100.0, max(0.0, float(raw_points))), 1)
+
+    risk_contributions: list[dict[str, Any]] = [
+        {"label": name, "points": pts, "type": "domain"}
+        for name, pts in detected_domains.items()
+    ]
+    risk_contributions.extend(
+        {"label": name, "points": -deduction, "type": "mitigation"}
+        for name, deduction in detected_mitigations.items()
+    )
+
+    components = {
+        "detected_risk_domains": list(detected_domains.keys()),
+        "detected_mitigation_frameworks": list(detected_mitigations.keys()),
+        "risk_contributions": risk_contributions,
+        "domain_points": domain_points,
+        "mitigation_points": mitigation_points,
+        "raw_points": raw_points,
+        "documents_scanned": len(docs),
+        "supporting_playbooks": [
+            {
+                "id": doc.get("id", ""),
+                "title": doc.get("title", ""),
+                "domain": doc.get("domain", ""),
+            }
+            for doc in docs
+        ],
+        "explanation": _format_knowledge_risk_explanation(
+            {
+                "detected_risk_domains": list(detected_domains.keys()),
+                "detected_mitigation_frameworks": list(detected_mitigations.keys()),
+                "risk_contributions": risk_contributions,
+            },
+            knowledge_score,
+        ),
+    }
+
+    return {
+        "knowledge_score": knowledge_score,
+        "knowledge_risk_level": _risk_rating_from_score(knowledge_score),
+        "components": components,
+    }
+
+
+def compute_nova_multidimensional_risk_assessment(
+    metrics: dict[str, Any],
+    *,
+    market_factor_score: float,
+    imf_indicators: dict[str, Any] | None = None,
+    china_money: dict[str, Any] | None = None,
+    tnx_proxy: dict[str, Any] | None = None,
+    retrieved_documents: list[dict[str, Any]] | None = None,
+    knowledge_query: str = "",
+) -> dict[str, Any]:
+    """Aggregate market, macro, policy, and knowledge scores into final desk risk."""
+    pair = metrics.get("pair", DEFAULT_PAIR)
+    spot = float(metrics.get("spot", 0.0))
+
+    market = compute_market_risk_score(metrics, market_factor_score)
+    macro = compute_macro_risk_score(pair, imf_indicators)
+    policy = compute_policy_risk_score(spot, china_money, tnx_proxy)
+    knowledge = compute_knowledge_risk_score(
+        retrieved_documents,
+        query=knowledge_query,
+    )
+
+    market_score = float(market["market_score"])
+    macro_score = float(macro["macro_score"])
+    policy_score = float(policy["policy_score"])
+    knowledge_score = float(knowledge["knowledge_score"])
+
+    final_risk_score = round(
+        market_score * NOVA_RISK_WEIGHTS["market"]
+        + macro_score * NOVA_RISK_WEIGHTS["macro"]
+        + policy_score * NOVA_RISK_WEIGHTS["policy"]
+        + knowledge_score * NOVA_RISK_WEIGHTS["knowledge"],
+        1,
+    )
+    final_risk_rating = _risk_rating_from_score(final_risk_score)
+    recommended_hedge_ratio = _hedge_ratio_from_final_score(final_risk_score)
+
+    contributions = {
+        "market": round(market_score * NOVA_RISK_WEIGHTS["market"], 1),
+        "macro": round(macro_score * NOVA_RISK_WEIGHTS["macro"], 1),
+        "policy": round(policy_score * NOVA_RISK_WEIGHTS["policy"], 1),
+        "knowledge": round(knowledge_score * NOVA_RISK_WEIGHTS["knowledge"], 1),
+    }
+
+    return {
+        "market_score": market_score,
+        "macro_score": macro_score,
+        "policy_score": policy_score,
+        "knowledge_score": knowledge_score,
+        "final_risk_score": final_risk_score,
+        "multi_factor_risk_rating": final_risk_rating,
+        "recommended_hedge_ratio": recommended_hedge_ratio,
+        "knowledge_risk_level": knowledge["knowledge_risk_level"],
+        "macro_risk_level": macro["macro_risk_level"],
+        "policy_risk_level": policy["policy_risk_level"],
+        "market_risk_level": _risk_rating_from_score(market_score),
+        "risk_weights": dict(NOVA_RISK_WEIGHTS),
+        "risk_contributions": contributions,
+        "market_breakdown": market["components"],
+        "macro_breakdown": macro["components"],
+        "policy_breakdown": policy["components"],
+        "knowledge_breakdown": knowledge["components"],
+    }
+
+
+def build_risk_score_explanation(metrics: dict[str, Any]) -> str:
+    """Transparent explainability block for treasury decision support."""
+    pair = metrics.get("pair", DEFAULT_PAIR)
+    market = metrics.get("market_breakdown", {})
+    macro = metrics.get("macro_breakdown", {})
+    policy = metrics.get("policy_breakdown", {})
+    knowledge = metrics.get("knowledge_breakdown", {})
+    contributions = metrics.get("risk_contributions", {})
+
+    lines = [
+        "**Why this score was generated:**",
+        "",
+        f"**Market factors ({NOVA_RISK_WEIGHTS['market']:.0%} weight · "
+        f"{contributions.get('market', metrics.get('market_score', 0)):.1f} pts contributed):** "
+        f"Legacy technical score {market.get('legacy_factor_score_0_1', 'N/A')} "
+        f"→ market score **{metrics.get('market_score', 0):.1f}**. "
+        f"Spot is {market.get('spot_vs_ma5', 'N/A')} MA5 and {market.get('spot_vs_ma30', 'N/A')} MA30; "
+        f"RSI **{market.get('rsi', 'N/A')}**, MACD hist **{market.get('macd_histogram', 'N/A')}**.",
+        "",
+        f"**Macro factors ({NOVA_RISK_WEIGHTS['macro']:.0%} weight · "
+        f"{contributions.get('macro', metrics.get('macro_score', 0)):.1f} pts contributed):** "
+        f"IMF CPI spread **{macro.get('inflation_spread_pp', 'N/A')}pp** "
+        f"(+{macro.get('inflation_points', 0)} pts), GDP spread "
+        f"**{macro.get('gdp_spread_pp', 'N/A')}pp** (+{macro.get('gdp_points', 0)} pts), "
+        f"{macro.get('reserve_currency', 'USD')} COFER share "
+        f"**{macro.get('reserve_share_pct', 'N/A')}%** (+{macro.get('cofer_points', 0)} pts).",
+        "",
+        f"**Policy factors ({NOVA_RISK_WEIGHTS['policy']:.0%} weight · "
+        f"{contributions.get('policy', metrics.get('policy_score', 0)):.1f} pts contributed):** "
+        f"FedWatch state **{policy.get('fedwatch_state', 'neutral')}** "
+        f"(+{policy.get('fedwatch_points', 0)} pts); CFETS deviation "
+        f"**{policy.get('cfets_deviation_bps', 0):.0f} bps** "
+        f"(+{policy.get('cfets_points', 0)} pts).",
+        "",
+        f"**Knowledge factors ({NOVA_RISK_WEIGHTS['knowledge']:.0%} weight · "
+        f"{contributions.get('knowledge', metrics.get('knowledge_score', 0)):.1f} pts contributed):** "
+        f"Risk-domain exposure model across retrieved treasury playbooks "
+        f"(+{knowledge.get('domain_points', 0)} domain · "
+        f"-{knowledge.get('mitigation_points', 0)} mitigation).",
+        "",
+        knowledge.get(
+            "explanation",
+            _format_knowledge_risk_explanation(
+                knowledge,
+                float(metrics.get("knowledge_score", 0.0)),
+            ),
+        ),
+        "",
+        f"**Final composite:** **{metrics.get('final_risk_score', 0):.1f} / 100** → "
+        f"**{metrics.get('multi_factor_risk_rating', 'MEDIUM')}** on **{pair}** "
+        f"with recommended hedge **{float(metrics.get('recommended_hedge_ratio', 0.55)):.0%}**.",
+    ]
+    return "\n".join(lines)
+
+
 def _english_retrieval_anchor_text(doc: dict[str, Any]) -> str:
     """English-only dense retrieval anchor for MiniLM FAISS indexing."""
     blocks = [
@@ -2074,25 +2678,17 @@ def get_live_desk_multi_factor_metrics(
     ma30_val = float(mf["ma30"].iloc[idx])
     bollinger_upper = float(mf["upper_band"].iloc[idx])
     total_score = float(mf["total_score"][idx])
-    hedge_ratio = float(mf["hedge_ratio"][idx])
-
-    if total_score >= 0.7:
-        mf_risk = "HIGH"
-    elif total_score >= 0.4:
-        mf_risk = "MEDIUM"
-    else:
-        mf_risk = "LOW"
+    legacy_hedge_ratio = float(mf["hedge_ratio"][idx])
 
     metrics.update(
         {
             "ma30": ma30_val,
             "bollinger_upper": bollinger_upper,
             "multi_factor_score": round(total_score, 3),
+            "legacy_market_hedge_ratio": legacy_hedge_ratio,
             "factor_trend": float(mf["factor_1"][idx]),
             "factor_bollinger": float(mf["factor_2"][idx]),
             "factor_macro": float(mf["factor_3"][idx]),
-            "multi_factor_risk_rating": mf_risk,
-            "recommended_hedge_ratio": hedge_ratio,
         }
     )
     metrics.update(
@@ -2102,6 +2698,40 @@ def get_live_desk_multi_factor_metrics(
             gross_sales_base=gross_sales_base,
             custom_vat_rate=custom_vat_rate,
         )
+    )
+
+    imf_entry = get_imf_macro_knowledge_entry()
+    imf_indicators = (imf_entry or {}).get("macro_indicators")
+    china_money = fetch_china_money_central_parity()
+    tnx_proxy = fetch_tnx_fedwatch_proxy()
+    knowledge_query = (
+        f"{metrics.get('pair', pair or DEFAULT_PAIR)} hedge exposure volatility cash-flow risk"
+    )
+    knowledge_docs = _simple_semantic_search(
+        knowledge_query,
+        pair=metrics.get("pair", pair or DEFAULT_PAIR),
+        top_k=3,
+    )
+
+    risk_assessment = compute_nova_multidimensional_risk_assessment(
+        metrics,
+        market_factor_score=total_score,
+        imf_indicators=imf_indicators if isinstance(imf_indicators, dict) else None,
+        china_money=china_money,
+        tnx_proxy=tnx_proxy,
+        retrieved_documents=knowledge_docs,
+        knowledge_query=knowledge_query,
+    )
+
+    metrics.update(
+        {
+            "multi_factor_risk_rating": risk_assessment["multi_factor_risk_rating"],
+            "recommended_hedge_ratio": risk_assessment["recommended_hedge_ratio"],
+            **risk_assessment,
+            "risk_score_explanation": build_risk_score_explanation(
+                {**metrics, **risk_assessment}
+            ),
+        }
     )
     nova_advisory = build_nova_risk_advisory(
         metrics.get("pair", DEFAULT_PAIR),
@@ -2139,7 +2769,12 @@ def build_live_market_context_prompt(metrics: dict[str, Any]) -> str:
         f"- MA5 Dynamics: {ma5_val:.4f}\n"
         f"- MA30 Macro Trend: {ma30_val:.4f}\n"
         f"- Bollinger Upper Barrier (20d, 2σ): {bollinger_upper:.4f}\n"
-        f"- Multi-Factor Score (F1×0.4 + F2×0.3 + F3×0.3): {metrics.get('multi_factor_score', 0):.3f}\n"
+        f"- Legacy Market Factor Score (0–1): {metrics.get('multi_factor_score', 0):.3f}\n"
+        f"- Market Risk Score (0–100): {metrics.get('market_score', 0):.1f}\n"
+        f"- Macro Risk Score (0–100): {metrics.get('macro_score', 0):.1f}\n"
+        f"- Policy Risk Score (0–100): {metrics.get('policy_score', 0):.1f}\n"
+        f"- Knowledge Risk Score (0–100): {metrics.get('knowledge_score', 0):.1f}\n"
+        f"- Final Composite Risk Score: {metrics.get('final_risk_score', 0):.1f} / 100\n"
         f"- Current System Multi-Factor Risk Rating: {risk_level}\n"
         f"- Calculated Multi-Factor Hedge Ratio: {hedge_ratio:.1%}\n"
         f"- Factor Flags — Trend(MA5): {int(metrics.get('factor_trend', 0))} | "
@@ -3312,6 +3947,14 @@ def build_executive_treasury_action(
         f"- **{directive}** at **{hedge_ratio:.0%} layered hedge**; {bracket}."
     )
 
+    score_note = ""
+    if metrics.get("final_risk_score") is not None:
+        score_note = (
+            f"\n\n**Composite risk score:** **{float(metrics.get('final_risk_score', 0)):.1f}/100** "
+            f"({metrics.get('multi_factor_risk_rating', 'MEDIUM')}) — "
+            f"35% market · 25% macro · 25% policy · 15% knowledge."
+        )
+
     body = (
         "### ⚡ NOVA Multi-Factor Risk Advisory\n\n"
         "**1. Quantitative Ingestion & Market Signals [DATA]**\n"
@@ -3319,9 +3962,9 @@ def build_executive_treasury_action(
         "**2. Transmission Channel & Treasury Risk Impact [ANALYSIS]**\n"
         f"{analysis_line}\n\n"
         "**3. Optimized Execution Framework [CONCLUSION]**\n"
-        f"{conclusion_line}"
+        f"{conclusion_line}{score_note}"
     )
-    return _trim_to_word_budget(body, max_words=200)
+    return _trim_to_word_budget(body, max_words=220)
 
 
 def _merge_retrieved_docs(
@@ -3367,6 +4010,23 @@ def fx_rag_build_response_parts(
     docs_pass2 = _simple_semantic_search(retrieval_query, pair=active_pair, top_k=3)
     docs = _merge_retrieved_docs(docs_pass1, docs_pass2, top_k=3)
 
+    risk_refresh = compute_nova_multidimensional_risk_assessment(
+        m,
+        market_factor_score=float(m.get("multi_factor_score", 0.0)),
+        imf_indicators=bundle.get("imf_macro_indicators")
+        if isinstance(bundle.get("imf_macro_indicators"), dict)
+        else None,
+        china_money=bundle.get("china_money"),
+        tnx_proxy=bundle.get("tnx_proxy"),
+        retrieved_documents=docs,
+        knowledge_query=user_query,
+    )
+    m = {
+        **m,
+        **risk_refresh,
+        "risk_score_explanation": build_risk_score_explanation({**m, **risk_refresh}),
+    }
+
     playbooks_layer = assemble_retrieved_playbooks_context(docs)
     context_block = bundle["agent_prompt"]
     if playbooks_layer and playbooks_layer not in context_block:
@@ -3386,6 +4046,7 @@ def fx_rag_build_response_parts(
     bollinger_upper = float(m.get("bollinger_upper", spot or 0.0))
     risk = m.get("multi_factor_risk_rating", m.get("risk_level", "MEDIUM"))
     hedge_ratio = float(m.get("recommended_hedge_ratio", 0.55))
+    final_score = float(m.get("final_risk_score", 0.0))
 
     market_block = ""
     if spot is not None:
@@ -3394,8 +4055,12 @@ def fx_rag_build_response_parts(
             f"(`{m.get('data_source', 'unknown')}`)\n"
             f"- Real-time Spot: **{float(spot):.4f}** | MA5: **{ma5:.4f}** | "
             f"MA30: **{ma30:.4f}** | Bollinger upper: **{bollinger_upper:.4f}**\n"
-            f"- Multi-factor risk: **{risk}** | Hedge ratio: **{hedge_ratio:.1%}** "
-            f"| Score: **{float(m.get('multi_factor_score', 0)):.3f}**\n"
+            f"- Final composite risk: **{risk}** | Score: **{final_score:.1f}/100** | "
+            f"Hedge ratio: **{hedge_ratio:.1%}**\n"
+            f"- Dimension scores — Market: **{float(m.get('market_score', 0)):.1f}** · "
+            f"Macro: **{float(m.get('macro_score', 0)):.1f}** · "
+            f"Policy: **{float(m.get('policy_score', 0)):.1f}** · "
+            f"Knowledge: **{float(m.get('knowledge_score', 0)):.1f}**\n"
             f"- Desk note: {m.get('risk_advice', '')}"
         )
 
@@ -3438,6 +4103,12 @@ def fx_rag_build_response_parts(
         "execution_block": execution_block,
         "executive_action": executive_action,
         "action": action,
+        "risk_score_explanation": m.get("risk_score_explanation", ""),
+        "final_risk_score": m.get("final_risk_score"),
+        "market_score": m.get("market_score"),
+        "macro_score": m.get("macro_score"),
+        "policy_score": m.get("policy_score"),
+        "knowledge_score": m.get("knowledge_score"),
         "disclaimer": disclaimer,
         "playbook_count": len(docs),
         "playbooks_layer": playbooks_layer,

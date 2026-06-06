@@ -503,6 +503,10 @@ def render_assistant_rag_message(msg: dict) -> None:
     st.markdown(f"**Your question:** {parts['user_query']}")
     st.markdown(parts.get("executive_action", parts.get("action", "")))
 
+    if parts.get("risk_score_explanation"):
+        with st.expander("Why this score was generated", expanded=False):
+            st.markdown(parts["risk_score_explanation"])
+
     if parts.get("execution_block"):
         with st.expander("⚡ Numeric execution ticket", expanded=False):
             st.success(parts["execution_block"])
@@ -571,6 +575,11 @@ def _extract_live_desk_vars(desk_metrics: dict) -> dict:
             desk_metrics.get("recommended_hedge_ratio", 0.55)
         ),
         "multi_factor_score": float(desk_metrics.get("multi_factor_score", 0.0)),
+        "market_score": float(desk_metrics.get("market_score", 0.0)),
+        "macro_score": float(desk_metrics.get("macro_score", 0.0)),
+        "policy_score": float(desk_metrics.get("policy_score", 0.0)),
+        "knowledge_score": float(desk_metrics.get("knowledge_score", 0.0)),
+        "final_risk_score": float(desk_metrics.get("final_risk_score", 0.0)),
         "net_payout_rsi": float(desk_metrics.get("net_payout_rsi", 50.0)),
         "net_payout_macd_histogram": float(
             desk_metrics.get("net_payout_macd_histogram", 0.0)
@@ -661,7 +670,12 @@ def build_live_desk_metrics_table(metrics: dict) -> pd.DataFrame:
             {"Metric": "MA5", "Value": f"{float(metrics.get('ma5', 0.0)):.4f}"},
             {"Metric": "MA30", "Value": f"{float(metrics.get('ma30', 0.0)):.4f}"},
             {"Metric": "Bollinger Upper", "Value": f"{float(metrics.get('bollinger_upper', 0.0)):.4f}"},
-            {"Metric": "Multi-Factor Score", "Value": f"{float(metrics.get('multi_factor_score', 0.0)):.3f}"},
+            {"Metric": "Legacy Market Factor (0–1)", "Value": f"{float(metrics.get('multi_factor_score', 0.0)):.3f}"},
+            {"Metric": "Market Risk Score", "Value": f"{float(metrics.get('market_score', 0.0)):.1f}"},
+            {"Metric": "Macro Risk Score", "Value": f"{float(metrics.get('macro_score', 0.0)):.1f}"},
+            {"Metric": "Policy Risk Score", "Value": f"{float(metrics.get('policy_score', 0.0)):.1f}"},
+            {"Metric": "Knowledge Risk Score", "Value": f"{float(metrics.get('knowledge_score', 0.0)):.1f}"},
+            {"Metric": "Final Composite Score", "Value": f"{float(metrics.get('final_risk_score', 0.0)):.1f} / 100"},
             {"Metric": "MF Risk Rating", "Value": metrics.get("multi_factor_risk_rating", "N/A")},
             {"Metric": "Hedge Ratio", "Value": f"{float(metrics.get('recommended_hedge_ratio', 0.0)):.1%}"},
             {"Metric": "VAT Net Payout RSI", "Value": f"{float(metrics.get('net_payout_rsi', 50.0)):.2f}"},
@@ -714,15 +728,97 @@ def render_institutional_data_ingestion_sidebar(
         indicators = (entry or {}).get("macro_indicators", {})
         spreads = compute_imf_ppp_spreads(selected_pair, indicators)
         st.sidebar.info("### IMF Macro Anchor Insights")
-        st.sidebar.json(
-            {
-                "pair": selected_pair,
-                "china_macro_anchor": CHINA_MACRO_ANCHOR,
-                "macro_indicators": indicators,
-                "ppp_spreads": spreads,
-                "formatted_block": format_imf_macro_indicators_block(indicators),
-            }
+        cpi = indicators.get("inflation_cpi_yoy", {}) if isinstance(indicators, dict) else {}
+        gdp = indicators.get("gdp_growth_forecast", {}) if isinstance(indicators, dict) else {}
+        cofer = (
+            indicators.get("cofer_sovereign_reserves_share", {}) if isinstance(indicators, dict) else {}
         )
+
+        dest = PAIR_TO_COUNTRY.get(selected_pair, "US")
+        base_ccy = (selected_pair.split("/", 1)[0] if "/" in selected_pair else "USD").strip().upper()
+        reserve_ccy = "USD" if base_ccy == "HKD" else base_ccy
+
+        def _pct(val: Any) -> str:
+            try:
+                return f"{float(val):.2f}%"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        def _pp(val: Any) -> str:
+            try:
+                return f"{float(val):+.2f}pp"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        us_cpi = cpi.get(dest)
+        cn_cpi = cpi.get(CHINA_MACRO_ANCHOR, cpi.get("China"))
+        cpi_spread = spreads.get("cpi_spread_vs_china")
+
+        dest_gdp = gdp.get(dest)
+        cn_gdp = gdp.get(CHINA_MACRO_ANCHOR, gdp.get("China"))
+        try:
+            gdp_diff = (
+                float(dest_gdp) - float(cn_gdp)
+                if dest_gdp is not None and cn_gdp is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            gdp_diff = None
+
+        reserve_share = cofer.get(reserve_ccy)
+
+        with st.sidebar.container():
+            st.sidebar.markdown(f"- **{dest} CPI**: {_pct(us_cpi)}")
+            st.sidebar.markdown(f"- **{CHINA_MACRO_ANCHOR} CPI**: {_pct(cn_cpi)}")
+            st.sidebar.metric("CPI Spread (PPP)", _pp(cpi_spread))
+
+            st.sidebar.markdown("")
+            st.sidebar.markdown(f"- **{dest} GDP Forecast**: {_pct(dest_gdp)}")
+            st.sidebar.markdown(f"- **{CHINA_MACRO_ANCHOR} GDP Forecast**: {_pct(cn_gdp)}")
+            st.sidebar.metric(
+                "GDP Growth Differential",
+                _pp(gdp_diff) if gdp_diff is not None else "N/A",
+            )
+
+            st.sidebar.markdown("")
+            st.sidebar.metric(
+                f"{reserve_ccy} Reserve Share (COFER)",
+                _pct(reserve_share),
+            )
+
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("**Executive Interpretation:**")
+
+            inflation_line = (
+                f"Higher {dest} inflation than {CHINA_MACRO_ANCHOR} implies mild long-term "
+                f"{reserve_ccy} purchasing-power erosion under PPP."
+                if isinstance(cpi_spread, (int, float)) and float(cpi_spread) > 0
+                else (
+                    f"{dest} inflation is not materially above {CHINA_MACRO_ANCHOR}; PPP pressure is muted."
+                )
+            )
+            growth_line = (
+                f"{CHINA_MACRO_ANCHOR} growth is structurally stronger, favoring a gradual long-cycle "
+                f"re-anchoring toward CNH on 90–180 day horizons."
+                if gdp_diff is not None and gdp_diff < 0
+                else f"Growth differentials are balanced; macro carry pressure is moderate."
+            )
+            reserve_line = (
+                f"{reserve_ccy} retains structural support from reserve-currency dominance (COFER)."
+                if reserve_share is not None
+                else "Reserve-currency support is stable; maintain disciplined hedge governance."
+            )
+
+            if selected_pair == "USD/CNH":
+                stance = "Maintain **moderate hedge coverage (55–70%)** for 90–180 day receivables via layered window forwards."
+            elif selected_pair in ("EUR/CNH", "GBP/CNH"):
+                stance = "Maintain **moderate hedge coverage (50–65%)** for 90–180 day receivables; ladder forwards to avoid timing risk."
+            else:
+                stance = "Maintain **baseline hedge coverage (40–55%)** and rebalance monthly as the policy corridor evolves."
+
+            st.sidebar.markdown(
+                f"{inflation_line} {reserve_line} {growth_line}\n\n**Recommended long-term hedge stance:** {stance}"
+            )
     elif panel == "cfets":
         china_money = fetch_china_money_central_parity()
         st.sidebar.info("### CFETS Central Parity Limits")
@@ -827,6 +923,55 @@ def render_pair_imf_macro_panel(selected_pair: str) -> None:
             st.markdown(imf_block)
 
 
+def render_multifactor_risk_breakdown(metrics: dict) -> None:
+    """Executive four-dimensional risk decomposition card."""
+    st.markdown("#### Multi-Factor Risk Breakdown")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Market Risk", f"{float(metrics.get('market_score', 0.0)):.1f}")
+    c2.metric("Macro Risk", f"{float(metrics.get('macro_score', 0.0)):.1f}")
+    c3.metric("Policy Risk", f"{float(metrics.get('policy_score', 0.0)):.1f}")
+    c4.metric("Knowledge Risk", f"{float(metrics.get('knowledge_score', 0.0)):.1f}")
+
+    f1, f2 = st.columns(2)
+    f1.metric(
+        "Final Score",
+        f"{float(metrics.get('final_risk_score', 0.0)):.1f} / 100",
+    )
+    f2.metric(
+        "Risk Rating",
+        metrics.get("multi_factor_risk_rating", metrics.get("risk_level", "MEDIUM")),
+    )
+
+    contributions = metrics.get("risk_contributions", {})
+    st.caption(
+        "Contribution mix · "
+        f"**35% Market** ({contributions.get('market', 0):.1f} pts) · "
+        f"**25% Macro** ({contributions.get('macro', 0):.1f} pts) · "
+        f"**25% Policy** ({contributions.get('policy', 0):.1f} pts) · "
+        f"**15% Knowledge** ({contributions.get('knowledge', 0):.1f} pts)"
+    )
+
+    explanation = metrics.get("risk_score_explanation", "")
+    knowledge_breakdown = metrics.get("knowledge_breakdown", {})
+    if explanation:
+        with st.expander("Why this score was generated", expanded=False):
+            st.markdown(explanation)
+
+    if knowledge_breakdown:
+        with st.expander("Knowledge Risk Domain Exposure", expanded=False):
+            knowledge_explanation = knowledge_breakdown.get("explanation")
+            if knowledge_explanation:
+                st.markdown(knowledge_explanation)
+            playbooks = knowledge_breakdown.get("supporting_playbooks", [])
+            if playbooks:
+                st.caption("Supporting playbooks")
+                for playbook in playbooks:
+                    st.markdown(
+                        f"- **{playbook.get('title', 'Untitled')}** "
+                        f"({playbook.get('domain', 'General')})"
+                    )
+
+
 def render_nova_risk_advisory(metrics: dict, selected_pair: str) -> None:
     """Executive NOVA Risk Advisory — VAT net payout RSI/MACD saturation overlay."""
     pair = metrics.get("pair", selected_pair)
@@ -862,7 +1007,7 @@ def render_live_desk_factor_strip(live_vars: dict) -> None:
     f2.metric("MA5", f"{live_vars['ma5_val']:.4f}")
     f3.metric("MA30", f"{live_vars['ma30_val']:.4f}")
     f4.metric("Bollinger ↑", f"{live_vars['bollinger_upper']:.4f}")
-    f5.metric("MF Risk", live_vars["risk_level"])
+    f5.metric("Final Score", f"{live_vars.get('final_risk_score', 0.0):.1f}")
     f6.metric("Hedge Ratio", f"{live_vars['recommended_hedge_ratio']:.1%}")
     if live_vars.get("net_payout_rsi") is not None:
         st.caption(
@@ -882,8 +1027,9 @@ def render_live_risk_desk(selected_pair: str, metrics: dict, df) -> None:
     c1.metric(f"{selected_pair} Spot", f"{metrics['spot']:.4f}")
     c2.metric("Day Change", f"{metrics['pct_change']:+.3f}%")
     c3.metric("MA5", f"{metrics['ma5']:.4f}")
-    c4.metric("Risk Level", metrics["risk_level"])
+    c4.metric("Composite Risk", metrics.get("multi_factor_risk_rating", metrics["risk_level"]))
 
+    render_multifactor_risk_breakdown(metrics)
     render_nova_risk_advisory(metrics, selected_pair)
 
     st.plotly_chart(build_fx_chart(df, selected_pair), width="stretch")
