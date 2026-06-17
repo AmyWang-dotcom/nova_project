@@ -1,11 +1,18 @@
 # Local Streamlit credentials — never commit active keys
 .streamlit/secrets.toml
+.streamlit/secrets.toml.*
+
+# API keys and local secrets
+.env
+.env.*
+*.key
+credentials.json
+openai_api_key.txt
 
 # Python / tooling
 __pycache__/
 *.py[cod]
 .Python
-.env
 .venv/
 venv/
 
