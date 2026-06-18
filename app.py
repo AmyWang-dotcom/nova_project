@@ -76,7 +76,6 @@ def _reset_risk_preference_panel_guard() -> None:
         fn()
 from risk_constants import resolve_display_hedge_ratio
 from treasury_copilot import (
-    MAX_AI_CALLS_PER_SESSION,
     build_local_enterprise_intelligence,
     build_local_hedge_ratio_explanation,
     build_local_hedge_strategy_review,
@@ -86,6 +85,8 @@ from treasury_copilot import (
     normalize_knowledge_case_list,
     serialize_for_cache,
 )
+
+MAX_AI_CALLS_PER_SESSION = 60
 
 DESK_QUOTE_LABEL = f"{OFFSHORE_QUOTE_CCY} (Offshore Yuan)"
 MACRO_YUAN_LABEL = f"{ONSHORE_QUOTE_CCY} (Onshore Yuan Anchor)"
@@ -867,18 +868,67 @@ def _refund_ai_budget() -> None:
         st.session_state.ai_call_count = count - 1
 
 
+def _message_indicates_api_quota_exhausted(message: str) -> bool:
+    blob = str(message or "").lower()
+    markers = (
+        "quota/billing exhausted",
+        "quota exceeded",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "insufficient funds",
+        "insufficient balance",
+        "payment required",
+        "out of credits",
+        "no credit",
+        "余额不足",
+    )
+    return any(marker in blob for marker in markers)
+
+
 def _record_openai_api_error(message: str) -> None:
-    st.session_state.openai_api_error = str(message)[:500]
+    safe = str(message)[:500]
+    st.session_state.openai_api_error = safe
+    if _message_indicates_api_quota_exhausted(safe):
+        st.session_state.api_quota_exhausted = True
 
 
 def _clear_openai_api_error() -> None:
     st.session_state.pop("openai_api_error", None)
+    st.session_state.pop("api_quota_exhausted", None)
+
+
+def _arm_api_quota_retry() -> None:
+    """Clear a prior quota warning so the next user-initiated AI call can probe billing again."""
+    _clear_openai_api_error()
+
+
+def _record_openai_api_success() -> None:
+    _clear_openai_api_error()
+
+
+def _ai_quota_exhausted() -> bool:
+    return bool(st.session_state.get("api_quota_exhausted"))
+
+
+def _ai_budget_block_reason() -> str:
+    if _ai_budget_exhausted():
+        return (
+            f"Session AI call limit reached ({MAX_AI_CALLS_PER_SESSION}/session). "
+            "Refresh the page to reset, or continue in Local Mode."
+        )
+    return ""
+
+
+def _ai_calls_blocked() -> bool:
+    return _ai_budget_exhausted()
 
 
 def _install_llm_session_hooks() -> None:
     """Wire refund + error surfacing for LLMService instances created outside app.py."""
     llm_service_module._session_budget_refund = _refund_ai_budget
     llm_service_module._session_error_sink = _record_openai_api_error
+    llm_service_module._session_budget_block_reason = _ai_budget_block_reason
+    llm_service_module._session_success_sink = _record_openai_api_success
 
 
 _install_llm_session_hooks()
@@ -905,7 +955,10 @@ def render_openai_api_error_banner(*, sidebar: bool = False) -> None:
     if not err or not init_llm_config().enabled:
         return
     target = st.sidebar if sidebar else st
-    target.warning(err)
+    if _ai_quota_exhausted():
+        target.error(err)
+    else:
+        target.warning(err)
 
 
 def _api_key_fingerprint(api_key: str | None) -> str:
@@ -920,20 +973,32 @@ def render_ai_mode_badge() -> None:
     """Dual-mode status indicator for sidebar."""
     if is_ai_enhanced_mode(st.session_state.get("openai_api_key")):
         remaining = _ai_budget_remaining()
-        st.sidebar.markdown(
-            '<div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.5);'
-            'border-radius:10px;padding:10px 12px;margin:8px 0;">'
-            '<span style="color:#86efac;font-weight:700;">🟢 Treasury Copilot</span>'
-            f'<br><span style="color:#94a3b8;font-size:0.85em;">'
-            f"AI calls remaining: {remaining}/{MAX_AI_CALLS_PER_SESSION}</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        if _ai_budget_exhausted():
-            st.sidebar.warning(
-                f"AI call limit reached ({MAX_AI_CALLS_PER_SESSION}/session). "
-                "Deterministic desk remains fully available."
+        if _ai_quota_exhausted():
+            st.sidebar.markdown(
+                '<div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.45);'
+                'border-radius:10px;padding:10px 12px;margin:8px 0;">'
+                '<span style="color:#fcd34d;font-weight:700;">🟠 API Quota Previously Exhausted</span>'
+                f'<br><span style="color:#94a3b8;font-size:0.85em;">'
+                f"AI calls remaining: {remaining}/{MAX_AI_CALLS_PER_SESSION} · "
+                "after topping up, click <b>Refresh AI Analysis</b> or send a copilot message to retry</span>"
+                "</div>",
+                unsafe_allow_html=True,
             )
+        else:
+            st.sidebar.markdown(
+                '<div style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.5);'
+                'border-radius:10px;padding:10px 12px;margin:8px 0;">'
+                '<span style="color:#86efac;font-weight:700;">🟢 Treasury Copilot</span>'
+                f'<br><span style="color:#94a3b8;font-size:0.85em;">'
+                f"AI calls remaining: {remaining}/{MAX_AI_CALLS_PER_SESSION}</span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if _ai_budget_exhausted():
+                st.sidebar.warning(
+                    f"AI call limit reached ({MAX_AI_CALLS_PER_SESSION}/session). "
+                    "Deterministic desk remains fully available."
+                )
         render_openai_api_error_banner(sidebar=True)
     else:
         st.sidebar.markdown(
@@ -981,7 +1046,13 @@ def render_llm_sidebar_config() -> LLMConfig:
         placeholder="sk-…",
     )
     st.session_state.openai_api_key = api_key.strip()
-    if api_key.strip():
+    fp = _api_key_fingerprint(api_key.strip()) if api_key.strip() else None
+    prev_fp = st.session_state.get("_llm_api_key_fingerprint")
+    if fp and fp != prev_fp:
+        _clear_openai_api_error()
+        st.session_state._llm_api_key_fingerprint = fp
+    elif not fp:
+        st.session_state.pop("_llm_api_key_fingerprint", None)
         _clear_openai_api_error()
     config = resolve_llm_config(st.session_state.openai_api_key, provider=provider)
     render_ai_mode_badge()
@@ -1109,6 +1180,9 @@ def _run_and_cache_ai_insights(
         return st.session_state.get("ai_insights_by_pair", {}).get(selected_pair, {}).get(
             "insights"
         )
+
+    if force:
+        _arm_api_quota_retry()
 
     cache_key = _ai_insights_cache_key(metrics, selected_pair)
     api_fp = _api_key_fingerprint(st.session_state.get("openai_api_key"))
@@ -1548,7 +1622,7 @@ def render_ai_report_controls(metrics: dict, selected_pair: str) -> None:
     if not llm_config.enabled:
         return
 
-    exhausted = _ai_budget_exhausted()
+    exhausted = _ai_calls_blocked()
     st.markdown("#### AI Board Report")
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -1570,7 +1644,13 @@ def render_ai_report_controls(metrics: dict, selected_pair: str) -> None:
             f"hedge strategy, and 30-day watchlist. "
             f"AI calls remaining: **{remaining}/{MAX_AI_CALLS_PER_SESSION}** (1h cache)."
         )
-        if exhausted:
+        if _ai_quota_exhausted():
+            render_openai_api_error_banner()
+            st.caption(
+                "Last API call reported quota/billing exhaustion. "
+                "After topping up, click **Refresh AI Analysis** to retry — no need to re-enter your API key."
+            )
+        elif exhausted:
             st.warning(
                 f"AI call limit reached ({MAX_AI_CALLS_PER_SESSION}/session). "
                 "Buttons disabled to protect against runaway OpenAI costs."
@@ -1646,6 +1726,8 @@ def _submit_copilot_message(
 
     live_vars = _extract_live_desk_vars(desk_metrics)
     ai_enabled = init_llm_config().enabled
+    if ai_enabled:
+        _arm_api_quota_retry()
     spinner_msg = (
         "Running enterprise assessment + LLM layers (knowledge, copilot, risk narrative)… "
         "This may take 30–90s on slow networks."
@@ -2196,7 +2278,6 @@ def render_multifactor_risk_breakdown(metrics: dict, selected_pair: str) -> None
 
     explanation = metrics.get("risk_score_explanation", "")
     ai_risk_narrative = metrics.get("ai_risk_narrative", "")
-    knowledge_breakdown = metrics.get("knowledge_breakdown", {})
     if explanation or ai_risk_narrative:
         with st.expander("Why this score was generated", expanded=False):
             if explanation:
@@ -2206,30 +2287,6 @@ def render_multifactor_risk_breakdown(metrics: dict, selected_pair: str) -> None
                 st.markdown(ai_risk_narrative)
 
     render_ai_knowledge_intelligence(metrics)
-
-    if knowledge_breakdown:
-        with st.expander("Knowledge Risk Domain Exposure (Rule-Based)", expanded=False):
-            # Avoid duplicating the long-form knowledge explanation which already appears
-            # inside "Why this score was generated".
-            knowledge_explanation = knowledge_breakdown.get("explanation")
-            if knowledge_explanation:
-                st.caption("Knowledge explanation shown above in **Why this score was generated**.")
-            trend = knowledge_breakdown.get("market_trend")
-            if trend:
-                st.caption(
-                    f"Desk context · Base-currency trend: **{trend}** · "
-                    f"Macro score: **{knowledge_breakdown.get('macro_score_context', 0):.1f}** · "
-                    f"Policy score: **{knowledge_breakdown.get('policy_score_context', 0):.1f}** · "
-                    f"Volatility elevated: **{knowledge_breakdown.get('market_volatility_elevated', False)}**"
-                )
-            playbooks = knowledge_breakdown.get("supporting_playbooks", [])
-            if playbooks:
-                st.caption("Supporting playbooks")
-                for playbook in playbooks:
-                    st.markdown(
-                        f"- **{playbook.get('title', 'Untitled')}** "
-                        f"({playbook.get('domain', 'General')})"
-                    )
 
     insights = (
         st.session_state.get("ai_insights_by_pair", {})
@@ -2298,6 +2355,8 @@ def render_live_risk_desk(selected_pair: str, metrics: dict, df) -> None:
         '<p class="bloomberg-header">🌐 Live Risk Desk</p>',
         unsafe_allow_html=True,
     )
+    if init_llm_config().enabled and st.session_state.get("openai_api_error"):
+        render_openai_api_error_banner()
     render_data_source_badge(metrics, df)
 
     c1, c2, c3, c4 = st.columns([1.05, 1.05, 1.05, 1.35])

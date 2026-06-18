@@ -10,8 +10,6 @@ import json
 import re
 from typing import Any
 
-MAX_AI_CALLS_PER_SESSION = 20
-
 _ARCHETYPE_MARKERS: tuple[tuple[str, str], ...] = (
     ("amazon", "Marketplace Seller"),
     ("shopify", "Marketplace Seller"),

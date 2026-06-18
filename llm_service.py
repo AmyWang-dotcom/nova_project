@@ -19,17 +19,47 @@ logger = logging.getLogger(__name__)
 
 _session_budget_refund: Callable[[], None] | None = None
 _session_error_sink: Callable[[str], None] | None = None
+_session_budget_block_reason: Callable[[], str] | None = None
+_session_success_sink: Callable[[], None] | None = None
 
 
 def configure_session_callbacks(
     *,
     budget_refund: Callable[[], None] | None = None,
     error_sink: Callable[[str], None] | None = None,
+    budget_block_reason: Callable[[], str] | None = None,
+    success_sink: Callable[[], None] | None = None,
 ) -> None:
     """Optional hooks wired from the Streamlit app (budget refund + user-visible errors)."""
-    global _session_budget_refund, _session_error_sink
+    global _session_budget_refund, _session_error_sink, _session_budget_block_reason, _session_success_sink
     _session_budget_refund = budget_refund
     _session_error_sink = error_sink
+    _session_budget_block_reason = budget_block_reason
+    _session_success_sink = success_sink
+
+
+def _is_quota_billing_http_error(
+    http_error: urllib.error.HTTPError,
+    message: str,
+    err_type: str,
+) -> bool:
+    if http_error.code == 402:
+        return True
+    blob = f"{err_type} {message}".lower()
+    quota_markers = (
+        "insufficient_quota",
+        "quota exceeded",
+        "exceeded your current quota",
+        "billing",
+        "insufficient funds",
+        "insufficient balance",
+        "credit balance",
+        "payment required",
+        "out of credits",
+        "no credit",
+        "余额不足",
+    )
+    return any(marker in blob for marker in quota_markers)
 
 
 def _friendly_openai_error(http_error: urllib.error.HTTPError, *, provider: str | None = None) -> str:
@@ -48,10 +78,10 @@ def _friendly_openai_error(http_error: urllib.error.HTTPError, *, provider: str 
     prov = str(provider or "llm").lower()
     provider_label = "DeepSeek" if prov == "deepseek" else ("OpenAI" if prov == "openai" else prov.upper())
 
-    if http_error.code == 429 and "insufficient_quota" in err_type:
+    if _is_quota_billing_http_error(http_error, message, err_type):
         return (
-            f"{provider_label} API quota exceeded — add billing/credits in your provider console. "
-            "Deterministic desk still works; AI layers fall back until quota is restored."
+            f"{provider_label} API quota/billing exhausted — add credits in your provider console. "
+            "Deterministic desk still works; AI layers are paused until quota is restored."
         )
     if http_error.code == 401:
         return (
@@ -257,7 +287,15 @@ class LLMService:
         budget_consumed = False
         if self._budget_gate is not None:
             if not self._budget_gate():
-                self._emit_error("Session AI call budget exhausted for this browser session.")
+                reason = "Session AI call budget exhausted for this browser session."
+                if _session_budget_block_reason is not None:
+                    try:
+                        custom = str(_session_budget_block_reason() or "").strip()
+                        if custom:
+                            reason = custom
+                    except Exception:
+                        pass
+                self._emit_error(reason)
                 return None
             budget_consumed = True
         safe_user = sanitize_llm_input(user_prompt)
@@ -285,6 +323,11 @@ class LLMService:
             with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
                 parsed_body = json.loads(response.read().decode("utf-8"))
             content = parsed_body["choices"][0]["message"]["content"]
+            if _session_success_sink is not None:
+                try:
+                    _session_success_sink()
+                except Exception:
+                    pass
             return str(content) if content else None
         except urllib.error.HTTPError as exc:
             if budget_consumed and self._budget_refund is not None:
