@@ -1,0 +1,58 @@
+{
+  "sessions": {
+    "12520dae-aa7b-409f-ace8-5cddeea62393": {
+      "user_message_count": 23,
+      "agent_message_count": 717,
+      "start_timestamp": "2026-06-04T12:13:44+08:00",
+      "end_timestamp": "2026-06-04T12:13:44+08:00",
+      "markdown_size_bytes": 472650,
+      "provider": "cursoride",
+      "last_updated": "2026-06-23T12:44:31Z"
+    },
+    "12e8ce67-8573-42d4-b282-f5e014416d71": {
+      "user_message_count": 8,
+      "agent_message_count": 346,
+      "start_timestamp": "2026-06-07T17:05:26+08:00",
+      "end_timestamp": "2026-06-07T17:05:26+08:00",
+      "markdown_size_bytes": 267708,
+      "provider": "cursoride",
+      "last_updated": "2026-06-24T14:29:32Z"
+    },
+    "1a02f967-975d-4afc-b5c8-27adc5c8423a": {
+      "user_message_count": 7,
+      "agent_message_count": 140,
+      "start_timestamp": "2026-06-18T22:15:48+08:00",
+      "end_timestamp": "2026-06-18T22:15:48+08:00",
+      "markdown_size_bytes": 86786,
+      "provider": "cursoride",
+      "last_updated": "2026-06-26T14:15:05Z"
+    },
+    "32c616a9-132d-43a1-ad52-8193289744bd": {
+      "user_message_count": 21,
+      "agent_message_count": 622,
+      "start_timestamp": "2026-06-13T20:39:40+08:00",
+      "end_timestamp": "2026-06-13T20:39:40+08:00",
+      "markdown_size_bytes": 597512,
+      "provider": "cursoride",
+      "last_updated": "2026-06-23T12:45:21Z"
+    },
+    "457b5f33-fbd3-4b6c-9b91-5a12f54f58b1": {
+      "user_message_count": 24,
+      "agent_message_count": 531,
+      "start_timestamp": "2026-05-29T14:49:12+08:00",
+      "end_timestamp": "2026-05-29T14:49:12+08:00",
+      "markdown_size_bytes": 468196,
+      "provider": "cursoride",
+      "last_updated": "2026-06-23T10:27:32Z"
+    },
+    "8535ee2a-8f13-4ec2-bed9-6cc297cbd709": {
+      "user_message_count": 2,
+      "agent_message_count": 15,
+      "start_timestamp": "2026-06-17T17:17:04+08:00",
+      "end_timestamp": "2026-06-17T17:17:04+08:00",
+      "markdown_size_bytes": 13110,
+      "provider": "cursoride",
+      "last_updated": "2026-06-23T12:47:55Z"
+    }
+  }
+}

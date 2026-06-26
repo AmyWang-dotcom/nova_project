@@ -2350,6 +2350,26 @@ def render_live_desk_factor_strip(live_vars: dict) -> None:
         )
 
 
+def _contract_audit_sample_text(base_ccy: str, pair: str) -> str:
+    """Recognizable English invoice snippet matched by the regex audit parser."""
+    return (
+        f"CROSS-BORDER TRADE INVOICE — SAMPLE (parser-friendly)\n"
+        f"Currency pair desk: {pair}\n"
+        f"\n"
+        f"Invoice No.: NOVA-2026-0418\n"
+        f"Seller: Nova Export Trading Co., Ltd.\n"
+        f"Buyer:  Offshore Retail Partner LLC\n"
+        f"\n"
+        f"Invoice Total: {base_ccy} 1,250,000.00\n"
+        f"Payment terms: 90 days\n"
+        f"Gross margin: 14%\n"
+        f"\n"
+        f"Goods: consumer electronics FOB shipment\n"
+        f"Settlement payable within 90 days of bill of lading.\n"
+        f"Contract value denominated in {base_ccy}; CNH conversion at payout.\n"
+    )
+
+
 def render_live_risk_desk(selected_pair: str, metrics: dict, df) -> None:
     st.markdown(
         '<p class="bloomberg-header">🌐 Live Risk Desk</p>',
@@ -2383,10 +2403,24 @@ def render_live_risk_desk(selected_pair: str, metrics: dict, df) -> None:
         f"Upload a sample contract or invoice—demo extracts {metrics['base_ccy']} exposure "
         f"and a recommended forward hedge ratio for **{selected_pair}**."
     )
+    sample_text = _contract_audit_sample_text(metrics["base_ccy"], selected_pair)
+    with st.expander("📋 Sample file content (copy into PDF / CSV / TXT)", expanded=False):
+        st.caption(
+            "Save as `.txt` or `.pdf` with selectable text. The parser looks for "
+            "**Invoice Total**, **Payment terms / Net days**, and optional **Gross margin**."
+        )
+        st.code(sample_text, language="text")
+        st.download_button(
+            label="Download sample as invoice_sample.txt",
+            data=sample_text,
+            file_name=f"nova_invoice_sample_{selected_pair.replace('/', '_')}.txt",
+            mime="text/plain",
+            key=f"contract_audit_sample_{selected_pair}",
+        )
     uploaded = st.file_uploader(
-        "Upload contract or invoice (XLSX, PDF, CSV, TXT)",
-        type=["xlsx", "xls", "pdf", "csv", "txt"],
-        help="Deterministic demo parser for competition judging.",
+        "Upload contract or invoice (PDF, CSV, TXT)",
+        type=["pdf", "csv", "txt"],
+        help="PDF, CSV, or plain-text invoice/contract with English amount and payment terms.",
     )
     if uploaded is not None:
         file_bytes = uploaded.getvalue()
