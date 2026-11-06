@@ -16,8 +16,7 @@ Each score is normalised to a 0‑100 scale and then combined with fixed weights
 This transparent formula produces the final composite score and hedge ratio.
 
 Multi‑Factor Technical Engine
-The candlestick chart shows 30 days of historical price action.
-We overlay the 5‑day moving average – a short‑term trend trigger.
+The candlestick chart shows 30 days of historical price action. We overlay the 5‑day moving average – a short‑term trend trigger.
 Below, we plot trading volume and daily volatility, both derived from the same OHLCV data.
 
 All live data is fetched via yfinance or Alpha Vantage – we use a fallback chain: Alpha Vantage first, then yfinance, then a deterministic simulator if both are unavailable.
@@ -37,7 +36,6 @@ We compute annualised volatility, 95% historical VaR, maximum drawdown, and Shar
 All calculations are done in pure NumPy and Pandas – no external black boxes.
 
 Contract & Invoice Audit Agent
-Narrator:
 Below the chart, you’ll find the Contract Audit Agent.
 Upload an invoice or contract – we support PDF, Excel, CSV, and text files.
 Our parser extracts the exposure amount, settlement tenor, and gross margin using regular expressions and, for PDFs, the PyPDF library.
@@ -85,4 +83,3 @@ Finally, the sidebar offers an “Institutional Data & Ingestion Inspect” pane
 
 NOVA FX Risk Copilot combines real‑time market data, fundamental macro anchors, a curated knowledge base of treasury playbooks, and optional AI interpretation – all wrapped in a transparent, deterministic scoring framework.
 You can run it entirely offline (local mode) or enhance it with your own OpenAI or DeepSeek key. We designed it for practicality: no black boxes, no hidden costs, and a clear audit trail for every decision. We hope that NOVA can help you navigate FX risk with confidence!
-<img width="415" height="686" alt="image" src="https://github.com/user-attachments/assets/9c6526cc-0d69-4e7d-9ee2-610f74253030" />
